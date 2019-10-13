@@ -3,7 +3,7 @@ package g1pubs_test
 import (
 	"crypto/rand"
 	"fmt"
-	"github.com/phoreproject/bls/g1pubs"
+	"github.com/grupokindynos/olympus-utils/bls/g1pubs"
 	"testing"
 )
 

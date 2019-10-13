@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/phoreproject/bls"
+	"github.com/grupokindynos/olympus-utils/bls"
 )
 
 const TestSamples = 1000

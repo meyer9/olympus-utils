@@ -3,7 +3,7 @@ package bls_test
 import (
 	"testing"
 
-	"github.com/phoreproject/bls"
+	"github.com/grupokindynos/olympus-utils/bls"
 )
 
 func BenchmarkG2MulAssign(b *testing.B) {

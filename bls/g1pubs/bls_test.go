@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/phoreproject/bls"
-	"github.com/phoreproject/bls/g1pubs"
+	"github.com/grupokindynos/olympus-utils/bls"
+	"github.com/grupokindynos/olympus-utils/bls/g1pubs"
 )
 
 type XORShift struct {
