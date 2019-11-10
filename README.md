@@ -15,3 +15,4 @@ For compliance with MIT licence we add a link to the original repository.
 * `bip39`: An implementation of bip39 on golang.
 * `hdwallets`: An hdwallets interface using bip32, bip39 and bls.
 * `bls`: A Pure GO bls library implementing the BLS12-381 curve created by the [Phore Project](https://github.com/phoreproject/). [Original Source](https://github.com/grupokindynos/olympus-utils/bls)
+* `amount`: An amount handling interface copied and modified from [btcsuite](https://github.com/btcsuite) amount interface.  [Original Source](https://github.com/btcsuite/btcutil/tree/master/amount.go)
