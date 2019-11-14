@@ -3,9 +3,9 @@ package bip39
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"github.com/grupokindynos/olympus-utils/bip39/words"
 	"testing"
 
-	"github.com/tyler-smith/go-bip39/wordlists"
 )
 
 type vector struct {
@@ -15,7 +15,7 @@ type vector struct {
 }
 
 func TestGetWordList(t *testing.T) {
-	assertEqualStringSlices(t, wordlists.English, GetWordList())
+	assertEqualStringSlices(t, words.English, GetWordList())
 }
 
 func TestGetWordIndex(t *testing.T) {
