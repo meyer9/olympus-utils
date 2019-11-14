@@ -1,4 +1,11 @@
-가격
+package words
+
+import (
+	"strings"
+)
+
+var Korean = strings.Split(strings.TrimSpace(korean), "\n")
+var korean = `가격
 가끔
 가난
 가능
@@ -2045,4 +2052,5 @@
 희망
 희생
 흰색
-힘껏w
+힘껏
+`

@@ -1,4 +1,11 @@
-abaco
+package words
+
+import (
+	"strings"
+)
+
+var Italian = strings.Split(strings.TrimSpace(italian), "\n")
+var italian = `abaco
 abbaglio
 abbinato
 abete
@@ -2046,3 +2053,4 @@ zucchero
 zufolo
 zulu
 zuppa
+`

@@ -1,4 +1,11 @@
-abaisser
+package words
+
+import (
+	"strings"
+)
+
+var French = strings.Split(strings.TrimSpace(french), "\n")
+var french = `abaisser
 abandon
 abdiquer
 abeille
@@ -2046,3 +2053,4 @@ zèbre
 zénith
 zeste
 zoologie
+`

@@ -1,4 +1,11 @@
-ábaco
+package words
+
+import (
+	"strings"
+)
+
+var Spanish = strings.Split(strings.TrimSpace(spanish), "\n")
+var spanish = `ábaco
 abdomen
 abeja
 abierto
@@ -2046,3 +2053,4 @@ zona
 zorro
 zumo
 zurdo
+`

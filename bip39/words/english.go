@@ -1,4 +1,11 @@
-abandon
+package words
+
+import (
+	"strings"
+)
+
+var English = strings.Split(strings.TrimSpace(english), "\n")
+var english = `abandon
 ability
 able
 about
@@ -2046,3 +2053,4 @@ zebra
 zero
 zone
 zoo
+`

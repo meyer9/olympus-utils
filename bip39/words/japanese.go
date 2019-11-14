@@ -1,4 +1,11 @@
-あいこくしん
+package words
+
+import (
+	"strings"
+)
+
+var Japanese = strings.Split(strings.TrimSpace(japanese), "\n")
+var japanese = `あいこくしん
 あいさつ
 あいだ
 あおぞら
@@ -2046,3 +2053,4 @@
 わすれもの
 わらう
 われる
+`
