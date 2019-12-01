@@ -4,6 +4,7 @@ Go BLS HD Wallet tools
 > This should not be used for Bitcoin or any other cryptocurrency using the secp256k1 curve.
 >
  - BIP32 - https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki
+ - BLS Implementation - https://github.com/phoreproject/bls
 
 ### Get this library
 

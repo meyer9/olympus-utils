@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/grupokindynos/olympus-utils/bls"
 	"github.com/grupokindynos/olympus-utils/bls/g1pubs"
 	"github.com/grupokindynos/olympus-utils/chainhash"
+	"golang.org/x/crypto/ripemd160"
 	"math/big"
 )
 
@@ -29,6 +31,8 @@ var (
 	ErrUnusableSeed         = errors.New("unusable seed")
 	ErrDeriveHardFromPublic = errors.New("cannot derive a hardened key from a public key")
 	ErrInvalidChild         = errors.New("the extended key at this index is invalid")
+	ErrBadChecksum          = errors.New("bad extended key checksum")
+	ErrNotPrivExtKey        = errors.New("unable to create private keys from a public extended key")
 )
 
 type ExtendedKey struct {
@@ -40,6 +44,72 @@ type ExtendedKey struct {
 	childNum  uint32
 	version   []byte
 	isPrivate bool
+}
+
+func (k *ExtendedKey) IsPrivate() bool {
+	return k.isPrivate
+}
+
+func (k *ExtendedKey) Depth() uint8 {
+	return k.depth
+}
+
+func (k *ExtendedKey) ParentFingerprint() uint32 {
+	return binary.BigEndian.Uint32(k.parentFP)
+}
+
+func (k *ExtendedKey) String() string {
+	if len(k.key) == 0 {
+		return "zeroed extended key"
+	}
+	var childNumBytes [4]byte
+	binary.BigEndian.PutUint32(childNumBytes[:], k.childNum)
+	var serializedKeyLen int
+	if k.isPrivate {
+		serializedKeyLen = 4 + 1 + 4 + 4 + 32 + 33 + 4
+	} else {
+		serializedKeyLen = 4 + 1 + 4 + 4 + 32 + 33 + 4
+	}
+	serializedBytes := make([]byte, 0, serializedKeyLen)
+	serializedBytes = append(serializedBytes, k.version...)
+	serializedBytes = append(serializedBytes, k.depth)
+	serializedBytes = append(serializedBytes, k.parentFP...)
+	serializedBytes = append(serializedBytes, childNumBytes[:]...)
+	serializedBytes = append(serializedBytes, k.chainCode...)
+	if k.isPrivate {
+		serializedBytes = append(serializedBytes, 0x00)
+		serializedBytes = paddedAppend(32, serializedBytes, k.key)
+	} else {
+		serializedBytes = append(serializedBytes, k.pubKeyBytes()...)
+	}
+	checkSum := chainhash.DoubleHashB(serializedBytes)[:4]
+	serializedBytes = append(serializedBytes, checkSum...)
+	fmt.Println(serializedBytes)
+	fmt.Println(len(serializedBytes))
+	return base58.Encode(serializedBytes)
+}
+
+func (k *ExtendedKey) Neuter(prefix []byte) (*ExtendedKey, error) {
+	if !k.isPrivate {
+		return k, nil
+	}
+	return NewExtendedKey(prefix, k.pubKeyBytes(), k.chainCode, k.parentFP,
+		k.depth, k.childNum, false), nil
+}
+
+func (k *ExtendedKey) pubKeyBytes() []byte {
+	if !k.isPrivate {
+		return k.key
+	}
+	if len(k.pubKey) == 0 {
+		var rawPrivKey [32]byte
+		buf := bytes.NewBuffer(rawPrivKey[:0])
+		buf.Write(k.key)
+		privKey := g1pubs.DeserializeSecretKey(rawPrivKey)
+		pubKey := g1pubs.PrivToPub(privKey).Serialize()
+		k.pubKey = pubKey[:]
+	}
+	return k.pubKey
 }
 
 func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
@@ -105,69 +175,47 @@ func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
 		k.depth+1, i, isPrivate), nil
 }
 
-func (k *ExtendedKey) pubKeyBytes() []byte {
+func (k *ExtendedKey) PubKey() (*g1pubs.PublicKey, error) {
+	var rawPubKeyBytes [48]byte
+	buf := bytes.NewBuffer(rawPubKeyBytes[:0])
+	buf.Write(k.pubKeyBytes())
+	return g1pubs.DeserializePublicKey(rawPubKeyBytes)
+}
+
+func (k *ExtendedKey) SecretKey() (*g1pubs.SecretKey, error) {
 	if !k.isPrivate {
-		return k.key
+		return nil, ErrNotPrivExtKey
 	}
-	if len(k.pubKey) == 0 {
-		var rawPrivKey [32]byte
-		buf := bytes.NewBuffer(rawPrivKey[:0])
-		buf.Write(k.key)
-		privKey := g1pubs.DeserializeSecretKey(rawPrivKey)
-		pubKey := g1pubs.PrivToPub(privKey).Serialize()
-		k.pubKey = pubKey[:]
-	}
-	return k.pubKey
+	var rawSecretBytes [32]byte
+	buf := bytes.NewBuffer(rawSecretBytes[:0])
+	buf.Write(k.key[1:33])
+	return g1pubs.DeserializeSecretKey(rawSecretBytes), nil
 }
 
-func (k *ExtendedKey) IsPrivate() bool {
-	return k.isPrivate
+func (k *ExtendedKey) Address(prefix []byte) (string, error) {
+	keyBytes := k.pubKeyBytes()
+	pubKeyHash := sha256.Sum256(keyBytes[:])
+	ripedmHash := ripemd160.New()
+	ripedmHash.Write(pubKeyHash[:])
+	addNet := append(prefix, ripedmHash.Sum(nil)...)
+	checkSumFirst := sha256.Sum256(addNet)
+	checkSumSecond := sha256.Sum256(checkSumFirst[:])
+	checkSum := checkSumSecond[0:4]
+	pubKeyFullBytes := append(addNet[:], checkSum...)
+	return base58.Encode(pubKeyFullBytes), nil
 }
 
-func (k *ExtendedKey) Depth() uint8 {
-	return k.depth
-}
-
-func (k *ExtendedKey) ParentFingerprint() uint32 {
-	return binary.BigEndian.Uint32(k.parentFP)
-}
-
-func (k *ExtendedKey) Neuter(prefix []byte) (*ExtendedKey, error) {
+func (k *ExtendedKey) WIF(prefix []byte) (string, error) {
 	if !k.isPrivate {
-		return k, nil
+		return "", ErrNotPrivExtKey
 	}
-	return NewExtendedKey(prefix, k.pubKeyBytes(), k.chainCode, k.parentFP,
-		k.depth, k.childNum, false), nil
-}
-
-// String returns the extended key as a human-readable base58-encoded string.
-func (k *ExtendedKey) String() string {
-	if len(k.key) == 0 {
-		return "zeroed extended key"
-	}
-	var childNumBytes [4]byte
-	binary.BigEndian.PutUint32(childNumBytes[:], k.childNum)
-	var serializedKeyLen int
-	if k.isPrivate {
-		serializedKeyLen = 4 + 1 + 4 + 4 + 32 + 33 + 4
-	} else {
-		serializedKeyLen = 4 + 1 + 4 + 4 + 32 + 48 + 4
-	}
-	serializedBytes := make([]byte, 0, serializedKeyLen+4)
-	serializedBytes = append(serializedBytes, k.version...)
-	serializedBytes = append(serializedBytes, k.depth)
-	serializedBytes = append(serializedBytes, k.parentFP...)
-	serializedBytes = append(serializedBytes, childNumBytes[:]...)
-	serializedBytes = append(serializedBytes, k.chainCode...)
-	if k.isPrivate {
-		serializedBytes = append(serializedBytes, 0x00)
-		serializedBytes = paddedAppend(32, serializedBytes, k.key)
-	} else {
-		serializedBytes = append(serializedBytes, k.pubKeyBytes()...)
-	}
-	checkSum := chainhash.DoubleHashB(serializedBytes)[:4]
-	serializedBytes = append(serializedBytes, checkSum...)
-	return base58.Encode(serializedBytes)
+	privKeyBytes := k.key
+	addNet := append(prefix, privKeyBytes[:]...)
+	checkSumFirst := sha256.Sum256(addNet)
+	checkSumSecond := sha256.Sum256(checkSumFirst[:])
+	checkSum := checkSumSecond[0:4]
+	privKeyFullBytes := append(addNet[:], checkSum...)
+	return base58.Encode(privKeyFullBytes), nil
 }
 
 func NewMaster(seed []byte, prefix []byte) (*ExtendedKey, error) {
@@ -207,11 +255,44 @@ func NewExtendedKey(version, key, chainCode, parentFP []byte, depth uint8,
 	}
 }
 
-func paddedAppend(size uint, dst, src []byte) []byte {
-	for i := 0; i < int(size)-len(src); i++ {
-		dst = append(dst, 0)
+func NewKeyFromString(key string) (*ExtendedKey, error) {
+	decoded := base58.Decode(key)
+	payload := decoded[:len(decoded)-4]
+	checkSum := decoded[len(decoded)-4:]
+	expectedCheckSum := chainhash.DoubleHashB(payload)[:4]
+	if !bytes.Equal(checkSum, expectedCheckSum) {
+		return nil, ErrBadChecksum
 	}
-	return append(dst, src...)
+	version := payload[:4]
+	depth := payload[4:5][0]
+	parentFP := payload[5:9]
+	childNum := binary.BigEndian.Uint32(payload[9:13])
+	chainCode := payload[13:45]
+	var keyData []byte
+	if len(decoded) == 82 {
+		keyData = payload[45:78]
+	} else {
+		keyData = payload[45:93]
+	}
+	isPrivate := keyData[0] == 0x00
+	if isPrivate {
+		keyData = keyData[1:]
+		keyNum := new(big.Int).SetBytes(keyData)
+		keyNum.Mod(keyNum, bls.RFieldModulus.ToBig())
+		if keyNum.Cmp(bls.RFieldModulus.ToBig()) > 0 || keyNum.Sign() == 0 {
+			return nil, ErrUnusableSeed
+		}
+	} else {
+		var rawKeyData [48]byte
+		buf := bytes.NewBuffer(rawKeyData[:0])
+		buf.Write(keyData)
+		_, err := g1pubs.DeserializePublicKey(rawKeyData)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return NewExtendedKey(version, keyData, chainCode, parentFP, depth,
+		childNum, isPrivate), nil
 }
 
 func GenerateSeed(length uint8) ([]byte, error) {
@@ -224,4 +305,11 @@ func GenerateSeed(length uint8) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+func paddedAppend(size uint, dst, src []byte) []byte {
+	for i := 0; i < int(size)-len(src); i++ {
+		dst = append(dst, 0)
+	}
+	return append(dst, src...)
 }
