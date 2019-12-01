@@ -10,9 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/grupokindynos/olympus-utils/base58"
-	"github.com/grupokindynos/olympus-utils/bls"
-	"github.com/grupokindynos/olympus-utils/bls/g1pubs"
 	"github.com/grupokindynos/olympus-utils/chainhash"
+	"github.com/phoreproject/bls"
+	"github.com/phoreproject/bls/g1pubs"
 	"golang.org/x/crypto/ripemd160"
 	"math/big"
 )
