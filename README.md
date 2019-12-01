@@ -10,6 +10,7 @@ This repository contains a group of libraries used by the Olympus protocol.
 Some of this libraries are a direct copy of an external repository. 
 For compliance with MIT licence we add a link to the original repository.
 
+* `address`: A library to parse and convert bls Public/Secret keys to bech32 Olympus format.
 * `amount`: An amount handling interface copied and modified from [btcsuite](https://github.com/btcsuite) amount interface.  [Original Source](https://github.com/btcsuite/btcutil/tree/master/amount.go)
 * `base58`: A direct copy of the [btcsuite](https://github.com/btcsuite) base58 implementation.  [Original Source](https://github.com/btcsuite/btcutil/tree/master/base58)
 * `bech32`: A direct copy of the [btcsuite](https://github.com/btcsuite) bech32 implementation.  [Original Source](https://github.com/btcsuite/btcutil/tree/master/bech32)
