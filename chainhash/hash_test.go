@@ -118,21 +118,21 @@ func TestNewHashFromStr(t *testing.T) {
 	}{
 		// Genesis hash.
 		{
-			"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+			mainNetGenesisHash.String(),
 			mainNetGenesisHash,
 			nil,
 		},
 
 		// Genesis hash with stripped leading zeros.
 		{
-			"19d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+			mainNetGenesisHash.String(),
 			mainNetGenesisHash,
 			nil,
 		},
 
 		// Empty string.
 		{
-			"",
+			Hash{}.String(),
 			Hash{},
 			nil,
 		},
@@ -151,7 +151,12 @@ func TestNewHashFromStr(t *testing.T) {
 
 		// Block 203707 with stripped leading zeros.
 		{
-			"3264bc2ac36a60840790ba1d475d01367e7c723da941069e9dc",
+			Hash([HashSize]byte{ // Make go vet happy.
+				0xdc, 0xe9, 0x69, 0x10, 0x94, 0xda, 0x23, 0xc7,
+				0xe7, 0x67, 0x13, 0xd0, 0x75, 0xd4, 0xa1, 0x0b,
+				0x79, 0x40, 0x08, 0xa6, 0x36, 0xac, 0xc2, 0x4b,
+				0x26, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			}).String(),
 			Hash([HashSize]byte{ // Make go vet happy.
 				0xdc, 0xe9, 0x69, 0x10, 0x94, 0xda, 0x23, 0xc7,
 				0xe7, 0x67, 0x13, 0xd0, 0x75, 0xd4, 0xa1, 0x0b,
