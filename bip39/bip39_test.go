@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"github.com/grupokindynos/olympus-utils/bip39/words"
 	"testing"
-
 )
 
 type vector struct {
