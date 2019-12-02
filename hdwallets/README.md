@@ -5,6 +5,11 @@ Go BLS HD Wallet tools
 >
  - BIP32 - https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki
  - BLS Implementation - https://github.com/phoreproject/bls
+ 
+## Information
+
+Since BLS public keys are a little bit larger than usual keys, the base58 encoding is not possible to be used on BLS HD wallets. 
+Instead, we used bech32 encoding using the xpub and xprv prefixes in plain text.  
 
 ### Get this library
 
