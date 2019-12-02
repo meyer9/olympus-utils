@@ -15,11 +15,19 @@ Go BLS HD Wallet tools
         // Generate a random 256 bit seed
         seed, err := hdwallets.GenerateSeed(256)
 
-        // Create a master private key
-        masterprv := hdwallet.NewMaster(seed, []byte{0x03, 0xE2, 0x59, 0x45})
+        // Create a master private key:
+        // To create extended keys, you must add the prefix definitions.
+        // To use Bitcoin defaults use nil as prefix param.
+        masterprv := hdwallet.NewMaster(seed, nil)
 
         // Convert a private key to public key
-        masterpub := masterprv.Neuter([]byte{0x03, 0xE2, 0x5D, 0x7E})
+        // To convert an extended key into the public form, you need to pass
+        // de prefix defeinitions. To use the Bitcoin defaults, pass nil.
+        masterpub := masterprv.Neuter(nil)
+        
+        // Generate hardened child key based on private or public key
+        childprv, err := masterprv.Child(HardenedKeyStart + 0)
+        childpub, err := masterpub.Child(HardenedKeyStart + 0)
 
         // Generate new child key based on private or public key
         childprv, err := masterprv.Child(0)

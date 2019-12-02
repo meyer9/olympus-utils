@@ -9,7 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/grupokindynos/olympus-utils/base58"
+	"github.com/grupokindynos/olympus-utils/bech32"
 	"github.com/grupokindynos/olympus-utils/chainhash"
 	"github.com/phoreproject/bls"
 	"github.com/phoreproject/bls/g1pubs"
@@ -18,9 +18,32 @@ import (
 )
 
 const (
-	MinSeedBytes = 16
-	MaxSeedBytes = 64
-	maxUint8     = 1<<8 - 1
+	MinSeedBytes     = 16
+	MaxSeedBytes     = 64
+	serializedKeyLen = 1 + 4 + 4 + 32 + 48 + 4
+	maxUint8         = 1<<8 - 1
+)
+
+type Prefixes struct {
+	ExtendedPriv string
+	ExtendedPub  string
+	AddrPubKey   string
+	PrivKey      string
+}
+
+var (
+	BitcoinPrefix = &Prefixes{
+		ExtendedPriv: "xprv",
+		ExtendedPub:  "xpub",
+		AddrPubKey:   "bc",
+		PrivKey:      "bp",
+	}
+	OlympusPrefix = &Prefixes{
+		ExtendedPriv: "pprv",
+		ExtendedPub:  "ppub",
+		AddrPubKey:   "olpub",
+		PrivKey:      "olpriv",
+	}
 )
 
 var (
@@ -31,8 +54,8 @@ var (
 	ErrUnusableSeed         = errors.New("unusable seed")
 	ErrDeriveHardFromPublic = errors.New("cannot derive a hardened key from a public key")
 	ErrInvalidChild         = errors.New("the extended key at this index is invalid")
-	ErrBadChecksum          = errors.New("bad extended key checksum")
 	ErrNotPrivExtKey        = errors.New("unable to create private keys from a public extended key")
+	ErrPrefixNoNet          = errors.New("decoded key doesn't match network prefix")
 )
 
 type ExtendedKey struct {
@@ -42,8 +65,8 @@ type ExtendedKey struct {
 	depth     uint8
 	parentFP  []byte
 	childNum  uint32
-	version   []byte
 	isPrivate bool
+	prefix    *Prefixes
 }
 
 func (k *ExtendedKey) IsPrivate() bool {
@@ -64,14 +87,7 @@ func (k *ExtendedKey) String() string {
 	}
 	var childNumBytes [4]byte
 	binary.BigEndian.PutUint32(childNumBytes[:], k.childNum)
-	var serializedKeyLen int
-	if k.isPrivate {
-		serializedKeyLen = 4 + 1 + 4 + 4 + 32 + 33 + 4
-	} else {
-		serializedKeyLen = 4 + 1 + 4 + 4 + 32 + 33 + 4
-	}
 	serializedBytes := make([]byte, 0, serializedKeyLen)
-	serializedBytes = append(serializedBytes, k.version...)
 	serializedBytes = append(serializedBytes, k.depth)
 	serializedBytes = append(serializedBytes, k.parentFP...)
 	serializedBytes = append(serializedBytes, childNumBytes[:]...)
@@ -79,22 +95,19 @@ func (k *ExtendedKey) String() string {
 	if k.isPrivate {
 		serializedBytes = append(serializedBytes, 0x00)
 		serializedBytes = paddedAppend(32, serializedBytes, k.key)
+		return bech32.Encode(k.prefix.ExtendedPriv, serializedBytes)
 	} else {
 		serializedBytes = append(serializedBytes, k.pubKeyBytes()...)
+		return bech32.Encode(k.prefix.ExtendedPub, serializedBytes)
 	}
-	checkSum := chainhash.DoubleHashB(serializedBytes)[:4]
-	serializedBytes = append(serializedBytes, checkSum...)
-	fmt.Println(serializedBytes)
-	fmt.Println(len(serializedBytes))
-	return base58.Encode(serializedBytes)
 }
 
-func (k *ExtendedKey) Neuter(prefix []byte) (*ExtendedKey, error) {
+func (k *ExtendedKey) Neuter() (*ExtendedKey, error) {
 	if !k.isPrivate {
 		return k, nil
 	}
-	return NewExtendedKey(prefix, k.pubKeyBytes(), k.chainCode, k.parentFP,
-		k.depth, k.childNum, false), nil
+	return NewExtendedKey(k.pubKeyBytes(), k.chainCode, k.parentFP,
+		k.depth, k.childNum, false, k.prefix), nil
 }
 
 func (k *ExtendedKey) pubKeyBytes() []byte {
@@ -171,8 +184,8 @@ func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
 		childKey = serializedPubKey[:]
 	}
 	parentFP := chainhash.Hash160(k.pubKeyBytes())[:4]
-	return NewExtendedKey(k.version, childKey, childChainCode, parentFP,
-		k.depth+1, i, isPrivate), nil
+	return NewExtendedKey(childKey, childChainCode, parentFP,
+		k.depth+1, i, isPrivate, k.prefix), nil
 }
 
 func (k *ExtendedKey) PubKey() (*g1pubs.PublicKey, error) {
@@ -188,37 +201,41 @@ func (k *ExtendedKey) SecretKey() (*g1pubs.SecretKey, error) {
 	}
 	var rawSecretBytes [32]byte
 	buf := bytes.NewBuffer(rawSecretBytes[:0])
-	buf.Write(k.key[1:33])
+	buf.Write(k.key)
 	return g1pubs.DeserializeSecretKey(rawSecretBytes), nil
 }
 
-func (k *ExtendedKey) Address(prefix []byte) (string, error) {
+func (k *ExtendedKey) Address() (string, error) {
 	keyBytes := k.pubKeyBytes()
 	pubKeyHash := sha256.Sum256(keyBytes[:])
 	ripedmHash := ripemd160.New()
 	ripedmHash.Write(pubKeyHash[:])
-	addNet := append(prefix, ripedmHash.Sum(nil)...)
-	checkSumFirst := sha256.Sum256(addNet)
+	checkSumFirst := sha256.Sum256(ripedmHash.Sum(nil))
 	checkSumSecond := sha256.Sum256(checkSumFirst[:])
 	checkSum := checkSumSecond[0:4]
-	pubKeyFullBytes := append(addNet[:], checkSum...)
-	return base58.Encode(pubKeyFullBytes), nil
+	pubKeyFullBytes := append(ripedmHash.Sum(nil)[:], checkSum...)
+	return bech32.Encode(k.prefix.AddrPubKey, pubKeyFullBytes), nil
 }
 
-func (k *ExtendedKey) WIF(prefix []byte) (string, error) {
+func (k *ExtendedKey) WIF() (string, error) {
 	if !k.isPrivate {
 		return "", ErrNotPrivExtKey
 	}
 	privKeyBytes := k.key
-	addNet := append(prefix, privKeyBytes[:]...)
-	checkSumFirst := sha256.Sum256(addNet)
+	checkSumFirst := sha256.Sum256(privKeyBytes[:])
 	checkSumSecond := sha256.Sum256(checkSumFirst[:])
 	checkSum := checkSumSecond[0:4]
-	privKeyFullBytes := append(addNet[:], checkSum...)
-	return base58.Encode(privKeyFullBytes), nil
+	privKeyFullBytes := append(privKeyBytes[:], checkSum...)
+	return bech32.Encode(k.prefix.PrivKey, privKeyFullBytes), nil
 }
 
-func NewMaster(seed []byte, prefix []byte) (*ExtendedKey, error) {
+func NewMaster(seed []byte, prefixes *Prefixes) (*ExtendedKey, error) {
+	var selectedPrefix *Prefixes
+	if prefixes == nil {
+		selectedPrefix = BitcoinPrefix
+	} else {
+		selectedPrefix = prefixes
+	}
 	if len(seed) < MinSeedBytes || len(seed) > MaxSeedBytes {
 		return nil, ErrInvalidSeedLen
 	}
@@ -238,44 +255,49 @@ func NewMaster(seed []byte, prefix []byte) (*ExtendedKey, error) {
 	secret := g1pubs.DeriveSecretKey(rawSecretHash)
 	secretSerialized := secret.Serialize()
 	parentFP := []byte{0x00, 0x00, 0x00, 0x00}
-	return NewExtendedKey(prefix, secretSerialized[:], chainCode,
-		parentFP, 0, 0, true), nil
+	return NewExtendedKey(secretSerialized[:], chainCode,
+		parentFP, 0, 0, true, selectedPrefix), nil
 }
 
-func NewExtendedKey(version, key, chainCode, parentFP []byte, depth uint8,
-	childNum uint32, isPrivate bool) *ExtendedKey {
+func NewExtendedKey(key, chainCode, parentFP []byte, depth uint8,
+	childNum uint32, isPrivate bool, prefixes *Prefixes) *ExtendedKey {
 	return &ExtendedKey{
 		key:       key,
 		chainCode: chainCode,
 		depth:     depth,
 		parentFP:  parentFP,
 		childNum:  childNum,
-		version:   version,
 		isPrivate: isPrivate,
+		prefix:    prefixes,
 	}
 }
 
-func NewKeyFromString(key string) (*ExtendedKey, error) {
-	decoded := base58.Decode(key)
-	payload := decoded[:len(decoded)-4]
-	checkSum := decoded[len(decoded)-4:]
-	expectedCheckSum := chainhash.DoubleHashB(payload)[:4]
-	if !bytes.Equal(checkSum, expectedCheckSum) {
-		return nil, ErrBadChecksum
-	}
-	version := payload[:4]
-	depth := payload[4:5][0]
-	parentFP := payload[5:9]
-	childNum := binary.BigEndian.Uint32(payload[9:13])
-	chainCode := payload[13:45]
-	var keyData []byte
-	if len(decoded) == 82 {
-		keyData = payload[45:78]
+func NewKeyFromString(key string, prefixes *Prefixes) (*ExtendedKey, error) {
+	var selectedPrefix *Prefixes
+	if prefixes == nil {
+		selectedPrefix = BitcoinPrefix
 	} else {
-		keyData = payload[45:93]
+		selectedPrefix = prefixes
+	}
+	prefix, decoded, err := bech32.Decode(key)
+	if err != nil {
+		return nil, err
+	}
+	depth := decoded[:1][0]
+	parentFP := decoded[1:5]
+	childNum := binary.BigEndian.Uint32(decoded[5:9])
+	chainCode := decoded[9:41]
+	var keyData []byte
+	if len(decoded) == 74 {
+		keyData = decoded[41:]
+	} else {
+		keyData = decoded[41:]
 	}
 	isPrivate := keyData[0] == 0x00
 	if isPrivate {
+		if prefix != selectedPrefix.ExtendedPriv {
+			return nil, ErrPrefixNoNet
+		}
 		keyData = keyData[1:]
 		keyNum := new(big.Int).SetBytes(keyData)
 		keyNum.Mod(keyNum, bls.RFieldModulus.ToBig())
@@ -283,6 +305,9 @@ func NewKeyFromString(key string) (*ExtendedKey, error) {
 			return nil, ErrUnusableSeed
 		}
 	} else {
+		if prefix != selectedPrefix.ExtendedPub {
+			return nil, ErrPrefixNoNet
+		}
 		var rawKeyData [48]byte
 		buf := bytes.NewBuffer(rawKeyData[:0])
 		buf.Write(keyData)
@@ -291,8 +316,8 @@ func NewKeyFromString(key string) (*ExtendedKey, error) {
 			return nil, err
 		}
 	}
-	return NewExtendedKey(version, keyData, chainCode, parentFP, depth,
-		childNum, isPrivate), nil
+	return NewExtendedKey(keyData, chainCode, parentFP, depth,
+		childNum, isPrivate, selectedPrefix), nil
 }
 
 func GenerateSeed(length uint8) ([]byte, error) {
