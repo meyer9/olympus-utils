@@ -17,14 +17,15 @@ import (
 	"github.com/grupokindynos/olympus-utils/base58"
 	"github.com/grupokindynos/olympus-utils/chainhash"
 	"github.com/phoreproject/bls"
+	"github.com/phoreproject/bls/g1pubs"
 	"math/big"
 )
 
 type NetPrefix struct {
-	ExtPub []byte
+	ExtPub  []byte
 	ExtPriv []byte
-	Addr []byte
-	Priv []byte
+	Addr    []byte
+	Priv    []byte
 }
 
 const (
@@ -152,12 +153,18 @@ func (k *ExtendedKey) pubKeyBytes() []byte {
 	if !k.isPrivate {
 		return k.key
 	}
-	// This is a private extended key, so calculate and memoize the public
+	// This is a private extended key, so calculate and memorize the public
 	// key if needed.
 	if len(k.pubKey) == 0 {
-		pkx, pky := btcec.S256().ScalarBaseMult(k.key)
-		pubKey := btcec.PublicKey{Curve: btcec.S256(), X: pkx, Y: pky}
-		k.pubKey = pubKey.SerializeCompressed()
+		privKey := new(big.Int).SetBytes(k.key)
+		fr, err := bls.FRReprFromBigInt(privKey)
+		if err != nil {
+			return nil
+		}
+		secret := g1pubs.KeyFromFQRepr(fr)
+		public := g1pubs.PrivToPub(secret)
+		serialized := public.Serialize()
+		k.pubKey = serialized[:]
 	}
 
 	return k.pubKey
@@ -273,7 +280,7 @@ func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
 	// a child extended key can't be created for this index and the caller
 	// should simply increment to the next index.
 	ilNum := new(big.Int).SetBytes(il)
-	if ilNum.Cmp(btcec.S256().N) >= 0 || ilNum.Sign() == 0 {
+	if ilNum.Cmp(bls.RFieldModulus.ToBig()) >= 0 || ilNum.Sign() == 0 {
 		return nil, ErrInvalidChild
 	}
 
@@ -295,38 +302,41 @@ func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
 		// childKey = parse256(Il) + parenKey
 		keyNum := new(big.Int).SetBytes(k.key)
 		ilNum.Add(ilNum, keyNum)
-		ilNum.Mod(ilNum, btcec.S256().N)
+		ilNum.Mod(ilNum, bls.RFieldModulus.ToBig())
 		childKey = ilNum.Bytes()
 		isPrivate = true
 	} else {
+		// TODO modify steps
 		// Case #3.
 		// Calculate the corresponding intermediate public key for
 		// intermediate private key.
-		ilx, ily := btcec.S256().ScalarBaseMult(il)
-		if ilx.Sign() == 0 || ily.Sign() == 0 {
+		fr, err := bls.FRReprFromBigInt(ilNum)
+		if err != nil {
 			return nil, ErrInvalidChild
 		}
-
 		// Convert the serialized compressed parent public key into X
 		// and Y coordinates so it can be added to the intermediate
 		// public key.
-		pubKey, err := btcec.ParsePubKey(k.key, btcec.S256())
+		var rawPubKey [48]byte
+		bufPubKey := bytes.NewBuffer(rawPubKey[:0])
+		bufPubKey.Write(k.key)
+		g1, err := bls.DecompressG1(rawPubKey)
 		if err != nil {
 			return nil, err
 		}
-
 		// Add the intermediate public key to the parent public key to
 		// derive the final child key.
 		//
 		// childKey = serP(point(parse256(Il)) + parentKey)
-		childX, childY := btcec.S256().Add(ilx, ily, pubKey.X, pubKey.Y)
-		pk := btcec.PublicKey{Curve: btcec.S256(), X: childX, Y: childY}
-		childKey = pk.SerializeCompressed()
+		g1proj := g1.MulFR(fr)
+		pubKey := g1pubs.NewPublicKeyFromG1(g1proj.ToAffine())
+		serializedPubKey := pubKey.Serialize()
+		childKey = serializedPubKey[:]
 	}
 
 	// The fingerprint of the parent for the derived child is the first 4
 	// bytes of the RIPEMD160(SHA256(parentPubKey)).
-	parentFP := btcutil.Hash160(k.pubKeyBytes())[:4]
+	parentFP := chainhash.Hash160(k.pubKeyBytes())[:4]
 	return NewExtendedKey(k.version, childKey, childChainCode, parentFP,
 		k.depth+1, i, isPrivate), nil
 }
@@ -339,17 +349,14 @@ func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
 // private key, so it is not capable of signing transactions or deriving
 // child extended private keys.  However, it is capable of deriving further
 // child extended public keys.
-func (k *ExtendedKey) Neuter() (*ExtendedKey, error) {
+func (k *ExtendedKey) Neuter(net *NetPrefix) (*ExtendedKey, error) {
 	// Already an extended public key.
 	if !k.isPrivate {
 		return k, nil
 	}
 
 	// Get the associated public extended key version bytes.
-	version, err := chaincfg.HDPrivateKeyToPublicKeyID(k.version)
-	if err != nil {
-		return nil, err
-	}
+	version := net.ExtPub
 
 	// Convert it to an extended public key.  The key for the new extended
 	// key will simply be the pubkey of the current extended private key.
@@ -359,24 +366,23 @@ func (k *ExtendedKey) Neuter() (*ExtendedKey, error) {
 		k.depth, k.childNum, false), nil
 }
 
-// ECPubKey converts the extended key to a btcec public key and returns it.
-func (k *ExtendedKey) BlsPubKey() (*btcec.PublicKey, error) {
-	return btcec.ParsePubKey(k.pubKeyBytes(), btcec.S256())
+// TODO
+// BlsPubKey converts the extended key to a bls public key and returns it.
+func (k *ExtendedKey) BlsPubKey() (*g1pubs.PublicKey, error) {
+	return nil, nil
 }
 
-// ECPrivKey converts the extended key to a btcec private key and returns it.
+// TODO
+// BlsPrivKey converts the extended key to a bls private key and returns it.
 // As you might imagine this is only possible if the extended key is a private
 // extended key (as determined by the IsPrivate function).  The ErrNotPrivExtKey
 // error will be returned if this function is called on a public extended key.
-func (k *ExtendedKey) BlsPrivKey() (*btcec.PrivateKey, error) {
+func (k *ExtendedKey) BlsPrivKey() (*g1pubs.SecretKey, error) {
 	if !k.isPrivate {
 		return nil, ErrNotPrivExtKey
 	}
-
-	privKey, _ := btcec.PrivKeyFromBytes(btcec.S256(), k.key)
-	return privKey, nil
+	return nil, nil
 }
-
 
 // paddedAppend appends the src byte slice to dst, returning the new slice.
 // If the length of the source is smaller than the passed size, leading zero
@@ -420,18 +426,18 @@ func (k *ExtendedKey) String() string {
 
 // IsForNet returns whether or not the extended key is associated with the
 // passed bitcoin network.
-func (k *ExtendedKey) IsForNet(net *chaincfg.Params) bool {
-	return bytes.Equal(k.version, net.HDPrivateKeyID[:]) ||
-		bytes.Equal(k.version, net.HDPublicKeyID[:])
+func (k *ExtendedKey) IsForNet(net *NetPrefix) bool {
+	return bytes.Equal(k.version, net.ExtPub) ||
+		bytes.Equal(k.version, net.ExtPriv)
 }
 
 // SetNet associates the extended key, and any child keys yet to be derived from
 // it, with the passed network.
-func (k *ExtendedKey) SetNet(net *chaincfg.Params) {
+func (k *ExtendedKey) SetNet(net *NetPrefix) {
 	if k.isPrivate {
-		k.version = net.HDPrivateKeyID[:]
+		k.version = net.ExtPriv
 	} else {
-		k.version = net.HDPublicKeyID[:]
+		k.version = net.ExtPub
 	}
 }
 
@@ -503,7 +509,6 @@ func NewKeyFromString(key string) (*ExtendedKey, error) {
 	if len(decoded) != serializedKeyLen+4 {
 		return nil, ErrInvalidKeyLen
 	}
-
 	// The serialized format is:
 	//   version (4) || depth (1) || parent fingerprint (4)) ||
 	//   child num (4) || chain code (32) || key data (33) || checksum (4)
@@ -522,7 +527,12 @@ func NewKeyFromString(key string) (*ExtendedKey, error) {
 	parentFP := payload[5:9]
 	childNum := binary.BigEndian.Uint32(payload[9:13])
 	chainCode := payload[13:45]
-	keyData := payload[45:78]
+	var keyData []byte
+	if len(payload) == 78 {
+		keyData = payload[45:78]
+	} else {
+		keyData = payload[45:93]
+	}
 
 	// The key data is a private key if it starts with 0x00.  Serialized
 	// compressed pubkeys either start with 0x02 or 0x03.
@@ -532,13 +542,16 @@ func NewKeyFromString(key string) (*ExtendedKey, error) {
 		// of the order of the secp256k1 curve and not be 0.
 		keyData = keyData[1:]
 		keyNum := new(big.Int).SetBytes(keyData)
-		if keyNum.Cmp(btcec.S256().N) >= 0 || keyNum.Sign() == 0 {
+		if keyNum.Cmp(bls.RFieldModulus.ToBig()) >= 0 || keyNum.Sign() == 0 {
 			return nil, ErrUnusableSeed
 		}
 	} else {
 		// Ensure the public key parses correctly and is actually on the
 		// secp256k1 curve.
-		_, err := btcec.ParsePubKey(keyData, btcec.S256())
+		var rawPubKey [48]byte
+		buf := bytes.NewBuffer(rawPubKey[:0])
+		buf.Write(keyData)
+		_, err := g1pubs.DeserializePublicKey(rawPubKey)
 		if err != nil {
 			return nil, err
 		}
@@ -567,4 +580,9 @@ func GenerateSeed(length uint8) ([]byte, error) {
 	}
 
 	return buf, nil
+}
+
+// https://github.com/Chia-Network/bls-signatures/blob/master/SPEC.md#hash512
+func hash512(m []byte) {
+
 }
