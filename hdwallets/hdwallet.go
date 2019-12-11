@@ -14,18 +14,19 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
+	"math/big"
+
 	"github.com/grupokindynos/olympus-utils/base58"
 	"github.com/grupokindynos/olympus-utils/chainhash"
 	"github.com/phoreproject/bls"
 	"github.com/phoreproject/bls/g1pubs"
-	"math/big"
 )
 
+// NetPrefix are prefixes used per-network.
 type NetPrefix struct {
 	ExtPub  []byte
 	ExtPriv []byte
-	Addr    []byte
-	Priv    []byte
 }
 
 const (
@@ -47,11 +48,17 @@ const (
 	// a master node.
 	MaxSeedBytes = 64 // 512 bits
 
-	// serializedKeyLen is the length of a serialized public or private
+	// serializedPrivKeyLen is the length of a serialized private
 	// extended key.  It consists of 4 bytes version, 1 byte depth, 4 bytes
-	// fingerprint, 4 bytes child number, 32 bytes chain code, and 33 bytes
-	// public/private key data.
-	serializedKeyLen = 4 + 1 + 4 + 4 + 32 + 33 // 78 bytes
+	// fingerprint, 4 bytes child number, 32 bytes chain code, and 32 bytes
+	// private key data.
+	serializedPrivKeyLen = 4 + 1 + 4 + 4 + 32 + 32 // 77 bytes
+
+	// serializedPubKeyLen is the length of a serialized public
+	// extended key.  It consists of 4 bytes version, 1 byte depth, 4 bytes
+	// fingerprint, 4 bytes child number, 32 bytes chain code, and 48 bytes
+	// public key data.
+	serializedPubKeyLen = 4 + 1 + 4 + 4 + 32 + 48 // 93 bytes
 
 	// maxUint8 is the max positive integer which can be serialized in a uint8
 	maxUint8 = 1<<8 - 1
@@ -126,7 +133,6 @@ type ExtendedKey struct {
 // other applications should just use NewMaster, Child, or Neuter.
 func NewExtendedKey(version, key, chainCode, parentFP []byte, depth uint8,
 	childNum uint32, isPrivate bool) *ExtendedKey {
-
 	// NOTE: The pubKey field is intentionally left nil so it is only
 	// computed and memoized as required.
 	return &ExtendedKey{
@@ -153,15 +159,13 @@ func (k *ExtendedKey) pubKeyBytes() []byte {
 	if !k.isPrivate {
 		return k.key
 	}
-	// This is a private extended key, so calculate and memorize the public
+
+	// This is a private extended key, so calculate and memoize the public
 	// key if needed.
 	if len(k.pubKey) == 0 {
-		privKey := new(big.Int).SetBytes(k.key)
-		fr, err := bls.FRReprFromBigInt(privKey)
-		if err != nil {
-			return nil
-		}
-		secret := g1pubs.KeyFromFQRepr(fr)
+		var secretKey [32]byte
+		copy(secretKey[:], k.key)
+		secret := g1pubs.DeserializeSecretKey(secretKey)
 		public := g1pubs.PrivToPub(secret)
 		serialized := public.Serialize()
 		k.pubKey = serialized[:]
@@ -242,47 +246,48 @@ func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
 	//
 	// For normal children:
 	//   serP(parentPubKey) || ser32(i)
-	keyLen := 33
-	data := make([]byte, keyLen+4)
+	var data []byte
 	if isChildHardened {
 		// Case #1.
 		// When the child is a hardened child, the key is known to be a
 		// private key due to the above early return.  Pad it with a
 		// leading zero as required by [BIP32] for deriving the child.
-		copy(data[1:], k.key)
+
+		// data in this case is 37 bytes
+		data = append([]byte{0x00}, k.key...)
+		data = append(data, []byte{0, 0, 0, 0}...)
 	} else {
 		// Case #2 or #3.
 		// This is either a public or private extended key, but in
 		// either case, the data which is used to derive the child key
 		// starts with the secp256k1 compressed public key bytes.
-		copy(data, k.pubKeyBytes())
+
+		// data in this case is 52 bytes
+		data = append(k.pubKeyBytes(), []byte{0, 0, 0, 0}...)
 	}
+
+	keyLen := len(data) - 4
 	binary.BigEndian.PutUint32(data[keyLen:], i)
 
 	// Take the HMAC-SHA512 of the current key's chain code and the derived
 	// data:
 	//   I = HMAC-SHA512(Key = chainCode, Data = data)
 
-	hmac512 := hmac.New(sha512.New, k.chainCode)
+	hmac512 := hmac.New(NewHash512, k.chainCode)
 	hmac512.Write(data)
 	ilr := hmac512.Sum(nil)
 
 	// Split "I" into two 32-byte sequences Il and Ir where:
 	//   Il = intermediate key used to derive the child
 	//   Ir = child chain code
-	il := ilr[:len(ilr)/2]
+	var il [32]byte
+	copy(il[:], ilr[:len(ilr)/2])
 	childChainCode := ilr[len(ilr)/2:]
 
 	// Both derived public or private keys rely on treating the left 32-byte
-	// sequence calculated above (Il) as a 256-bit integer that must be
-	// within the valid range for a secp256k1 private key.  There is a small
-	// chance (< 1 in 2^127) this condition will not hold, and in that case,
-	// a child extended key can't be created for this index and the caller
-	// should simply increment to the next index.
-	ilNum := new(big.Int).SetBytes(il)
-	if ilNum.Cmp(bls.RFieldModulus.ToBig()) >= 0 || ilNum.Sign() == 0 {
-		return nil, ErrInvalidChild
-	}
+	// sequence calculated above (Il) as a 256-bit integer that is used to derive
+	// the BLS private key.
+	ilKey := g1pubs.DeriveSecretKey(il)
 
 	// The algorithm used to derive the child key depends on whether or not
 	// a private or public child is being derived.
@@ -299,39 +304,46 @@ func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
 		// Add the parent private key to the intermediate private key to
 		// derive the final child key.
 		//
+		ilFr := ilKey.GetFRElement().Copy()
+
+		// get parent key as an FR element
+		var parentKey [32]byte
+		copy(parentKey[:], k.key)
+		parentSecret := g1pubs.DeserializeSecretKey(parentKey)
+		parentFr := parentSecret.GetFRElement()
+
 		// childKey = parse256(Il) + parenKey
-		keyNum := new(big.Int).SetBytes(k.key)
-		ilNum.Add(ilNum, keyNum)
-		ilNum.Mod(ilNum, bls.RFieldModulus.ToBig())
-		childKey = ilNum.Bytes()
+		ilFr.AddAssign(parentFr)
+		childKeyBytes := ilFr.Bytes()
+		childKey = childKeyBytes[:]
 		isPrivate = true
 	} else {
 		// TODO modify steps
 		// Case #3.
 		// Calculate the corresponding intermediate public key for
 		// intermediate private key.
-		fr, err := bls.FRReprFromBigInt(ilNum)
-		if err != nil {
-			return nil, ErrInvalidChild
-		}
+		ilPub := g1pubs.PrivToPub(ilKey)
+		ilPoint := ilPub.GetPoint()
+
 		// Convert the serialized compressed parent public key into X
 		// and Y coordinates so it can be added to the intermediate
 		// public key.
-		var rawPubKey [48]byte
-		bufPubKey := bytes.NewBuffer(rawPubKey[:0])
-		bufPubKey.Write(k.key)
-		g1, err := bls.DecompressG1(rawPubKey)
+		var parentPubBytes [48]byte
+		copy(parentPubBytes[:], k.key)
+		parentPub, err := g1pubs.DeserializePublicKey(parentPubBytes)
 		if err != nil {
 			return nil, err
 		}
+		parentPoint := parentPub.GetPoint()
+
 		// Add the intermediate public key to the parent public key to
 		// derive the final child key.
 		//
 		// childKey = serP(point(parse256(Il)) + parentKey)
-		g1proj := g1.MulFR(fr)
-		pubKey := g1pubs.NewPublicKeyFromG1(g1proj.ToAffine())
-		serializedPubKey := pubKey.Serialize()
-		childKey = serializedPubKey[:]
+		childPoint := parentPoint.Add(ilPoint)
+		childPub := g1pubs.NewPublicKeyFromG1(childPoint.ToAffine())
+		childPubBytes := childPub.Serialize()
+		childKey = childPubBytes[:]
 	}
 
 	// The fingerprint of the parent for the derived child is the first 4
@@ -366,13 +378,13 @@ func (k *ExtendedKey) Neuter(net *NetPrefix) (*ExtendedKey, error) {
 		k.depth, k.childNum, false), nil
 }
 
-// TODO
 // BlsPubKey converts the extended key to a bls public key and returns it.
 func (k *ExtendedKey) BlsPubKey() (*g1pubs.PublicKey, error) {
-	return nil, nil
+	var pubBytes [48]byte
+	copy(pubBytes[:], k.pubKeyBytes())
+	return g1pubs.DeserializePublicKey(pubBytes)
 }
 
-// TODO
 // BlsPrivKey converts the extended key to a bls private key and returns it.
 // As you might imagine this is only possible if the extended key is a private
 // extended key (as determined by the IsPrivate function).  The ErrNotPrivExtKey
@@ -381,7 +393,11 @@ func (k *ExtendedKey) BlsPrivKey() (*g1pubs.SecretKey, error) {
 	if !k.isPrivate {
 		return nil, ErrNotPrivExtKey
 	}
-	return nil, nil
+
+	var secretKeyBytes [32]byte
+	copy(secretKeyBytes[:], k.key)
+
+	return g1pubs.DeserializeSecretKey(secretKeyBytes), nil
 }
 
 // paddedAppend appends the src byte slice to dst, returning the new slice.
@@ -405,18 +421,17 @@ func (k *ExtendedKey) String() string {
 
 	// The serialized format is:
 	//   version (4) || depth (1) || parent fingerprint (4)) ||
-	//   child num (4) || chain code (32) || key data (33) || checksum (4)
-	serializedBytes := make([]byte, 0, serializedKeyLen+4)
+	//   child num (4) || chain code (32) || key (priv ? 32 : 48)
+	serializedBytes := make([]byte, 0, serializedPubKeyLen+4)
 	serializedBytes = append(serializedBytes, k.version...)
 	serializedBytes = append(serializedBytes, k.depth)
 	serializedBytes = append(serializedBytes, k.parentFP...)
 	serializedBytes = append(serializedBytes, childNumBytes[:]...)
 	serializedBytes = append(serializedBytes, k.chainCode...)
 	if k.isPrivate {
-		serializedBytes = append(serializedBytes, 0x00)
-		serializedBytes = paddedAppend(32, serializedBytes, k.key)
+		serializedBytes = append(serializedBytes, k.key...)
 	} else {
-		serializedBytes = append(serializedBytes, k.pubKeyBytes()...)
+		serializedBytes = append(serializedBytes, k.pubKeyBytes()...) // 48 bytes
 	}
 
 	checkSum := chainhash.DoubleHashB(serializedBytes)[:4]
@@ -479,7 +494,7 @@ func NewMaster(seed []byte, net *NetPrefix) (*ExtendedKey, error) {
 	if len(seed) < MinSeedBytes || len(seed) > MaxSeedBytes {
 		return nil, ErrInvalidSeedLen
 	}
-	hmac512 := hmac.New(sha512.New, masterKey)
+	hmac512 := hmac.New(NewHash512, masterKey)
 	hmac512.Write(seed)
 	lr := hmac512.Sum(nil)
 	// Split "I" into two 32-byte sequences Il and Ir where:
@@ -506,12 +521,12 @@ func NewKeyFromString(key string) (*ExtendedKey, error) {
 	// The base58-decoded extended key must consist of a serialized payload
 	// plus an additional 4 bytes for the checksum.
 	decoded := base58.Decode(key)
-	if len(decoded) != serializedKeyLen+4 {
+	if len(decoded) != serializedPubKeyLen+4 && len(decoded) != serializedPrivKeyLen+4 {
 		return nil, ErrInvalidKeyLen
 	}
 	// The serialized format is:
 	//   version (4) || depth (1) || parent fingerprint (4)) ||
-	//   child num (4) || chain code (32) || key data (33) || checksum (4)
+	//   child num (4) || chain code (32) || key (priv ? 32 : 48)
 
 	// Split the payload and checksum up and ensure the checksum matches.
 	payload := decoded[:len(decoded)-4]
@@ -527,20 +542,14 @@ func NewKeyFromString(key string) (*ExtendedKey, error) {
 	parentFP := payload[5:9]
 	childNum := binary.BigEndian.Uint32(payload[9:13])
 	chainCode := payload[13:45]
-	var keyData []byte
-	if len(payload) == 78 {
-		keyData = payload[45:78]
-	} else {
-		keyData = payload[45:93]
-	}
+	keyData := payload[45:]
 
 	// The key data is a private key if it starts with 0x00.  Serialized
 	// compressed pubkeys either start with 0x02 or 0x03.
-	isPrivate := keyData[0] == 0x00
+	isPrivate := len(keyData) == 32
 	if isPrivate {
 		// Ensure the private key is valid.  It must be within the range
 		// of the order of the secp256k1 curve and not be 0.
-		keyData = keyData[1:]
 		keyNum := new(big.Int).SetBytes(keyData)
 		if keyNum.Cmp(bls.RFieldModulus.ToBig()) >= 0 || keyNum.Sign() == 0 {
 			return nil, ErrUnusableSeed
@@ -549,8 +558,7 @@ func NewKeyFromString(key string) (*ExtendedKey, error) {
 		// Ensure the public key parses correctly and is actually on the
 		// secp256k1 curve.
 		var rawPubKey [48]byte
-		buf := bytes.NewBuffer(rawPubKey[:0])
-		buf.Write(keyData)
+		copy(rawPubKey[:], keyData)
 		_, err := g1pubs.DeserializePublicKey(rawPubKey)
 		if err != nil {
 			return nil, err
@@ -582,7 +590,42 @@ func GenerateSeed(length uint8) ([]byte, error) {
 	return buf, nil
 }
 
-// https://github.com/Chia-Network/bls-signatures/blob/master/SPEC.md#hash512
-func hash512(m []byte) {
+// Hash512 is a 512-bit hash based on two SHA256 hashes concatenated together.
+type Hash512 struct {
+	currentData []byte
+}
 
+// BlockSize gets the block size of the hash (which is the same
+// as SHA256).
+func (h *Hash512) BlockSize() int { return sha512.BlockSize }
+
+// Reset resets the hash to the default state.
+func (h *Hash512) Reset() {
+	h.currentData = nil
+}
+
+// Size gets the size of the hash in bytes.
+func (h *Hash512) Size() int {
+	return 64
+}
+
+// Sum appends the checksum of the hash to the data provided and returns it.
+func (h *Hash512) Sum(data []byte) []byte {
+	h0 := chainhash.HashB(append(h.currentData, 0))
+	h1 := chainhash.HashB(append(h.currentData, 1))
+
+	out := append(data, h0...)
+	out = append(out, h1...)
+	return out
+}
+
+func (h *Hash512) Write(data []byte) (int, error) {
+	h.currentData = append(h.currentData, data...)
+	return len(data), nil
+}
+
+// NewHash512 creates a new 512-bit hash.
+func NewHash512() hash.Hash {
+	h := &Hash512{}
+	return h
 }
