@@ -2,6 +2,7 @@ package hdwallets_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/phoreproject/bls/g1pubs"
@@ -30,8 +31,8 @@ func (xor *XORShift) Read(b []byte) (int, error) {
 }
 
 var polisNetPrefix = &hdwallets.NetPrefix{
-	ExtPub:  []byte("ppub"),
-	ExtPriv: []byte("pprv"),
+	ExtPub:  []byte{0x1f, 0x74, 0x90, 0xf0},
+	ExtPriv: []byte{0x11, 0x24, 0xd9, 0x70},
 }
 
 func TestExtendedPrivateKey(t *testing.T) {
@@ -257,5 +258,13 @@ func TestExtendedKeyToFromString(t *testing.T) {
 
 	if epkFromStr.ParentFingerprint() != epk.ParentFingerprint() {
 		t.Fatal("expected extended key parent FP to match after serializing/deserializing")
+	}
+
+	if !strings.HasPrefix(epkStr, "ppub") {
+		t.Fatal("expected public key to have prefix ppub")
+	}
+
+	if !strings.HasPrefix(eskStr, "pprv") {
+		t.Fatal("expected secret key to have prefix pprv")
 	}
 }
