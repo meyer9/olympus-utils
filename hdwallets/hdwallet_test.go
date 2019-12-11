@@ -7,7 +7,7 @@ import (
 
 	"github.com/phoreproject/bls/g1pubs"
 
-	"github.com/grupokindynos/olympus-utils/hdwallets"
+	"github.com/grupokindynos/ogen-utils/hdwallets"
 )
 
 type XORShift struct {

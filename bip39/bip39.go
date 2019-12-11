@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/grupokindynos/olympus-utils/bip39/words"
+	"github.com/grupokindynos/ogen-utils/bip39/words"
 	"golang.org/x/crypto/pbkdf2"
 	"math/big"
 	"strings"
