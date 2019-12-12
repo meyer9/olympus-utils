@@ -500,18 +500,16 @@ func NewMaster(seed []byte, net *NetPrefix) (*ExtendedKey, error) {
 	// Split "I" into two 32-byte sequences Il and Ir where:
 	//   Il = master secret key
 	//   Ir = master chain code
-	secretKey := lr[:len(lr)/2]
+	var secretKeyBytes [32]byte
+	copy(secretKeyBytes[:], lr[:len(lr)/2])
+	secretKey := g1pubs.DeriveSecretKey(secretKeyBytes)
 	chainCode := lr[len(lr)/2:]
 	// Ensure the key in usable.
-	secretKeyNum := new(big.Int).SetBytes(secretKey)
-	// Modulus of seed to ensure validity of the BLS private key
-	secretKeyNum.Mod(secretKeyNum, bls.RFieldModulus.ToBig())
-	// Ensure the seed source is under the curve
-	if secretKeyNum.Cmp(bls.RFieldModulus.ToBig()) >= 0 || secretKeyNum.Sign() == 0 {
-		return nil, ErrUnusableSeed
-	}
+
+	secretKeySer := secretKey.Serialize()
+
 	parentFP := []byte{0x00, 0x00, 0x00, 0x00}
-	return NewExtendedKey(net.ExtPriv, secretKey, chainCode,
+	return NewExtendedKey(net.ExtPriv, secretKeySer[:], chainCode,
 		parentFP, 0, 0, true), nil
 }
 

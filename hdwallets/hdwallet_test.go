@@ -2,11 +2,13 @@ package hdwallets_test
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/phoreproject/bls/g1pubs"
 
+	"github.com/grupokindynos/olympus-utils/chainhash"
 	"github.com/grupokindynos/olympus-utils/hdwallets"
 )
 
@@ -266,5 +268,22 @@ func TestExtendedKeyToFromString(t *testing.T) {
 
 	if !strings.HasPrefix(eskStr, "pprv") {
 		t.Fatal("expected secret key to have prefix pprv")
+	}
+}
+
+const DeriveIterations = 1000
+
+func TestDeriveKey(t *testing.T) {
+
+	for i := 0; i < DeriveIterations; i++ {
+		hash := chainhash.DoubleHashB([]byte(fmt.Sprintf("%d", i)))
+		masterKey, err := hdwallets.NewMaster(hash, polisNetPrefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = masterKey.Child(44 + 0x80000000)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
